@@ -23,3 +23,5 @@ plt.plot(recent_data.index[-30:], recent_data['Close'][-30:], label='Actual')
 plt.plot(recent_data.index[-30:], predicted_data, label='Predicted')
 plt.legend()
 plt.show()
+
+print(predicted_data)
