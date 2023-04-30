@@ -10,20 +10,25 @@ from keras.layers import Dense, LSTM, Dropout
 from keras.optimizers import Adam
 from pylab import rcParams
 
+
 def datetime_to_timestamp(x):
     return datetime.strptime(x.strftime('%Y%m%d'), '%Y%m%d')
+
 
 def load_data():
     stock_dataset_train = pd.read_csv('STAG.csv')
     interest_rate_dataset = pd.read_csv('US10Y.csv')
 
-    stock_dataset_train['DGS10'] = interest_rate_dataset['DGS10']
-    cols = list(stock_dataset_train)[1:7]
+    # Merge datasets on the 'Date' column using inner join
+    merged_dataset = stock_dataset_train.merge(interest_rate_dataset, on='Date', how='inner')
 
-    datelist_train = list(stock_dataset_train['Date'])
+    cols = list(merged_dataset)[1:7]
+
+    datelist_train = list(merged_dataset['Date'])
     datelist_train = [dt.datetime.strptime(date, '%Y-%m-%d').date() for date in datelist_train]
 
-    return stock_dataset_train, cols, datelist_train
+    return merged_dataset, cols, datelist_train
+
 
 def preprocess_data(stock_dataset_train, cols):
     stock_dataset_train = stock_dataset_train[cols].astype(str)
@@ -35,9 +40,12 @@ def preprocess_data(stock_dataset_train, cols):
 
     return stock_dataset_train
 
-def create_training_set(stock_dataset_train):
-    training_set = stock_dataset_train.as_matrix()
 
+def create_training_set(stock_dataset_train):
+    # Using multiple features (predictors)
+    training_set = stock_dataset_train.values
+
+    # Feature Scaling
     sc = StandardScaler()
     training_set_scaled = sc.fit_transform(training_set)
 
@@ -45,6 +53,7 @@ def create_training_set(stock_dataset_train):
     sc_predict.fit_transform(training_set[:, 0:1])
 
     return training_set, training_set_scaled, sc, sc_predict
+
 
 def prepare_data_structure(training_set_scaled, stock_dataset_train):
     X_train = []
@@ -59,7 +68,8 @@ def prepare_data_structure(training_set_scaled, stock_dataset_train):
 
     X_train, y_train = np.array(X_train), np.array(y_train)
 
-    return X_train, y_train, n_future, n_past
+    return X_train, y_train, n_future, n_past, len(training_set_scaled) - n_future - n_past + 1
+
 
 def create_model(stock_dataset_train, n_past):
     model = Sequential()
@@ -73,6 +83,7 @@ def create_model(stock_dataset_train, n_past):
 
     return model
 
+
 def train_model(model, X_train, y_train):
     es = EarlyStopping(monitor='val_loss', min_delta=1e-10, patience=10, verbose=1)
     rlr = ReduceLROnPlateau(monitor='val_loss', factor=0.5, patience=10, verbose=1)
@@ -83,7 +94,8 @@ def train_model(model, X_train, y_train):
 
     return history
 
-def predict_stock_prices(model, X_train, y_train, n_future, n_past, sc_predict):
+
+def predict_stock_prices(model, X_train, y_train, n_future, n_past, sc_predict, datelist_train):
     datelist_future = pd.date_range(datelist_train[-1], periods=n_future, freq='1d').tolist()
     datelist_future_ = [this_timestamp.date() for this_timestamp in datelist_future]
 
@@ -95,41 +107,48 @@ def predict_stock_prices(model, X_train, y_train, n_future, n_past, sc_predict):
 
     return y_pred_future, y_pred_train, datelist_future
 
-def plot_predictions(y_pred_future, y_pred_train, datelist_train, datelist_future, dataset_train):
-    PREDICTIONS_FUTURE = pd.DataFrame(y_pred_future, columns=['Open']).set_index(pd.Series(datelist_future))
-    PREDICTION_TRAIN = pd.DataFrame(y_pred_train, columns=['Open']).set_index(pd.Series(datelist_train[2 * n_past + n_future -1:]))
 
-    PREDICTION_TRAIN.index = PREDICTION_TRAIN.index.to_series().apply(datetime_to_timestamp)
+def plot_predictions(y_pred_future, y_pred_train, datelist_train, datelist_future, stock_dataset_train, n_past,
+                     n_future, valid_range):
+    plt.figure(figsize=(15, 5))
 
-    rcParams['figure.figsize'] = 14, 5
+    # Reshape y_pred_train and plot it
+    y_pred_train_reshaped = y_pred_train.reshape(-1)
+    plt.plot(datelist_train[-valid_range:], y_pred_train_reshaped, color='orange', label='Predicted Stock Price')
 
-    START_DATE_FOR_PLOTTING = '2012-06-01'
+    # Create a DataFrame to store the predicted stock prices
+    future_df = pd.DataFrame(y_pred_future, index=datelist_future, columns=['Prediction'])
 
-    plt.plot(PREDICTIONS_FUTURE.index, PREDICTIONS_FUTURE['Open'], color='r', label='Predicted Stock Price')
-    plt.plot(PREDICTION_TRAIN.loc[START_DATE_FOR_PLOTTING:].index, PREDICTION_TRAIN.loc[START_DATE_FOR_PLOTTING:]['Open'], color='orange', label='Training predictions')
-    plt.plot(dataset_train.loc[START_DATE_FOR_PLOTTING:].index, dataset_train.loc[START_DATE_FOR_PLOTTING:]['Open'], color='b', label='Actual Stock Price')
+    # Calculate the start date for plotting: 3 years before the last date in the training set
+    START_DATE_FOR_PLOTTING = stock_dataset_train.index[-1] - dt.timedelta(days=3 * 365)
 
-    plt.axvline(x = min(PREDICTIONS_FUTURE.index), color='green', linewidth=2, linestyle='--')
+    # Plot actual stock prices
+    plt.plot(stock_dataset_train.loc[START_DATE_FOR_PLOTTING:].index,
+             stock_dataset_train.loc[START_DATE_FOR_PLOTTING:]['Open'], color='b', label='Actual Stock Price')
 
-    plt.grid(which='major', color='#cccccc', alpha=0.5)
-
-    plt.legend(shadow=True)
-    plt.title('Predictions and Actual Stock Prices', family='Arial', fontsize=12)
-    plt.xlabel('Timeline', family='Arial', fontsize=10)
-    plt.ylabel('Stock Price Value', family='Arial', fontsize=10)
-    plt.xticks(rotation=45, fontsize=8)
+    # Plot predicted stock prices for the next month
+    plt.plot(future_df.index, future_df['Prediction'], color='r', label='Predicted Stock Price for Next Month')
+    plt.legend()
+    plt.xlabel('Time')
+    plt.ylabel('Stock Price')
+    plt.title('Stock Price Predictions')
     plt.show()
+
+    # Save predictions to a CSV file
+    future_df.to_csv('predictions.csv')
+
 
 def main():
     stock_dataset_train, cols, datelist_train = load_data()
     stock_dataset_train = preprocess_data(stock_dataset_train, cols)
     training_set, training_set_scaled, sc, sc_predict = create_training_set(stock_dataset_train)
-    X_train, y_train, n_future, n_past = prepare_data_structure(training_set_scaled, stock_dataset_train)
+    X_train, y_train, n_future, n_past, valid_range = prepare_data_structure(training_set_scaled, stock_dataset_train)
     model = create_model(stock_dataset_train, n_past)
     history = train_model(model, X_train, y_train)
-    y_pred_future, y_pred_train, datelist_future = predict_stock_prices(model, X_train, y_train, n_future, n_past, sc_predict)
-    plot_predictions(y_pred_future, y_pred_train, datelist_train, datelist_future, stock_dataset_train)
+    y_pred_future, y_pred_train, datelist_future = predict_stock_prices(model, X_train, y_train, n_future, n_past, sc_predict, datelist_train)
+    plot_predictions(y_pred_future, y_pred_train, datelist_train, datelist_future, stock_dataset_train, n_past, n_future, valid_range)
 
 if __name__ == '__main__':
     main()
+
 
